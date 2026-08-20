@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Agent Runtime Control Center</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark">AR</div>
+    <div>
+      <p class="eyebrow">ENTERPRISE INTELLIGENCE INFRASTRUCTURE</p>
+      <h1>Agent Runtime Control Center</h1>
+    </div>
+    <div class="connection"><span></span><strong>Runtime Online</strong></div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">CONTROL PLANE / HARDENED MVP 0.2</p>
+        <h2>让每一次智能体执行<br><em>可恢复、可审计、可控制</em></h2>
+        <p class="hero-copy">统一管理运行任务、上下文引用、工具副作用与检查点，以 execution epoch 隔离旧 Worker。</p>
+      </div>
+      <div class="hero-metrics">
+        <article><span id="metric-total">0</span><small>总任务</small></article>
+        <article><span id="metric-running">0</span><small>运行中</small></article>
+        <article><span id="metric-attention">0</span><small>需处置</small></article>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel controls">
+        <div class="panel-heading"><div><p class="eyebrow">QUICK START</p><h3>发起与控制</h3></div></div>
+        <label>开发访问令牌<input id="access-token" value="dev-token" autocomplete="off" spellcheck="false"></label>
+        <label>任务目标<textarea id="goal" rows="3" placeholder="例如：读取上下文并生成运营分析摘要">分析季度运营数据并生成可信摘要</textarea></label>
+        <button id="create" class="primary">创建并启动任务</button>
+        <div class="divider"></div>
+        <label>上下文内容<textarea id="context-content" rows="3" placeholder="写入大块上下文，任务只传引用"></textarea></label>
+        <button id="save-context" class="secondary">保存 Context Reference</button>
+        <output id="context-ref">尚未保存上下文</output>
+      </aside>
+
+      <section class="panel run-list-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">RUN REGISTRY</p><h3>任务运行</h3></div>
+          <button id="refresh" class="icon-button" aria-label="刷新">↻</button>
+        </div>
+        <div id="runs" class="run-list"><p class="empty">暂无任务，先创建一个运行。</p></div>
+      </section>
+
+      <section class="panel detail-panel">
+        <div class="panel-heading"><div><p class="eyebrow">EXECUTION TIMELINE</p><h3 id="detail-title">事件时间线</h3></div></div>
+        <div id="actions" class="actions hidden">
+          <button data-action="checkpoint">生成 Checkpoint</button>
+          <button data-action="recover">接管恢复</button>
+          <button data-action="complete" class="success">完成任务</button>
+        </div>
+        <div id="timeline" class="timeline"><p class="empty">选择一个任务查看不可变事件记录。</p></div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
