@@ -1,0 +1,4 @@
+allowlist:
+- effect: read_only
+  name: query_metric
+schema_version: agent.tool-bindings.v1

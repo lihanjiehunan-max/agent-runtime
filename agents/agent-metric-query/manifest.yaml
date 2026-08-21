@@ -1,0 +1,16 @@
+agent_id: agent-metric-query
+digest: sha256:dc94787f5a91816d0cde36dfe6e83dd198d005819f8ef6f74587e961dbbfbb04
+files:
+  agent: agent.yaml
+  backend: backend.yaml
+  limits: limits.yaml
+  observability: observability.yaml
+  runtime: runtime/deepagents/runtime.yaml
+  system_prompt: prompts/system.md
+  tool_bindings: tool-bindings.yaml
+runtime:
+  sdk_version: 0.7.7
+  type: deepagents
+schema_version: agent.package.v1
+status: active
+version: 0.1.0

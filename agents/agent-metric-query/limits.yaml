@@ -1,0 +1,6 @@
+execution_timeout_seconds: 60
+max_model_calls: 6
+max_tokens: 20000
+max_tool_calls: 8
+schema_version: agent.limits.v1
+session_ttl_minutes: 1440

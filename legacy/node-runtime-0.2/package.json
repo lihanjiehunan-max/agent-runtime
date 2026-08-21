@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev.js",
     "start": "node src/server.js",
-    "test": "node --test --test-reporter=spec test/*.test.js",
+    "test": "node --test --test-reporter=spec",
     "check": "node --check src/*.js && node --check scripts/*.js && node --check public/*.js"
   },
   "engines": {
