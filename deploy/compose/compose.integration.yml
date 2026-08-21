@@ -1,0 +1,174 @@
+name: agent-runtime-integration
+
+services:
+  runtime-api:
+    image: ${RUNTIME_API_IMAGE:-agent-runtime-api:local}
+    working_dir: /workspace
+    environment: &runtime-environment
+      RUNTIME_ENVIRONMENT: ${RUNTIME_ENVIRONMENT:-integration}
+      RUNTIME_API_BASE_PATH: /api/v1/runtime
+      RUNTIME_DEEPAGENTS_SDK_VERSION: ${RUNTIME_DEEPAGENTS_SDK_VERSION:-0.7.7}
+      RUNTIME_ALLOW_DEV_AUTH: "0"
+      RUNTIME_ENABLE_PRODUCTION_COMPOSITION: "1"
+      RUNTIME_PRINCIPAL_VERIFIER_FACTORY: ${RUNTIME_PRINCIPAL_VERIFIER_FACTORY:?set RUNTIME_PRINCIPAL_VERIFIER_FACTORY}
+      RUNTIME_DATABASE_URL: ${RUNTIME_DATABASE_URL:?set RUNTIME_DATABASE_URL}
+      RUNTIME_REDIS_URL: ${RUNTIME_REDIS_URL:?set RUNTIME_REDIS_URL}
+      RUNTIME_MINIO_ENDPOINT: ${RUNTIME_MINIO_ENDPOINT:?set RUNTIME_MINIO_ENDPOINT}
+      RUNTIME_MINIO_ACCESS_KEY: ${RUNTIME_MINIO_ACCESS_KEY:?set RUNTIME_MINIO_ACCESS_KEY}
+      RUNTIME_MINIO_SECRET_KEY: ${RUNTIME_MINIO_SECRET_KEY:?set RUNTIME_MINIO_SECRET_KEY}
+      RUNTIME_MINIO_SECURE: ${RUNTIME_MINIO_SECURE:-0}
+      RUNTIME_MINIO_BUCKET: ${RUNTIME_MINIO_BUCKET:?set RUNTIME_MINIO_BUCKET}
+      MODEL_GATEWAY_BASE_URL: ${MODEL_GATEWAY_BASE_URL:?set MODEL_GATEWAY_BASE_URL}
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:?set MODEL_GATEWAY_API_KEY}
+      MODEL_GATEWAY_MODEL: ${MODEL_GATEWAY_MODEL:?set MODEL_GATEWAY_MODEL}
+      RUNTIME_TOOL_GATEWAY_URL: ${RUNTIME_TOOL_GATEWAY_URL:?set RUNTIME_TOOL_GATEWAY_URL}
+      RUNTIME_TOOL_GATEWAY_API_KEY: ${RUNTIME_TOOL_GATEWAY_API_KEY:?set RUNTIME_TOOL_GATEWAY_API_KEY}
+      RUNTIME_WORKER_ID: ${RUNTIME_WORKER_ID:?set RUNTIME_WORKER_ID}
+      RUNTIME_DEFAULT_TENANT_ID: ${RUNTIME_DEFAULT_TENANT_ID:?set RUNTIME_DEFAULT_TENANT_ID}
+      RUNTIME_DEFAULT_AGENT_ID: ${RUNTIME_DEFAULT_AGENT_ID:-agent-metric-query}
+      RUNTIME_DEFAULT_AGENT_VERSION: ${RUNTIME_DEFAULT_AGENT_VERSION:-0.1.0}
+      RUNTIME_DEFAULT_PACKAGE_DIGEST: ${RUNTIME_DEFAULT_PACKAGE_DIGEST:?set RUNTIME_DEFAULT_PACKAGE_DIGEST}
+      RUNTIME_PACKAGES_ROOT: ${RUNTIME_PACKAGES_ROOT:-agents}
+    ports:
+      - "${RUNTIME_API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      model-gateway:
+        condition: service_healthy
+      tool-gateway:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  runtime-worker:
+    image: ${RUNTIME_WORKER_IMAGE:-agent-runtime-worker:local}
+    working_dir: /workspace
+    environment: *runtime-environment
+    depends_on:
+      runtime-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      model-gateway:
+        condition: service_healthy
+      tool-gateway:
+        condition: service_healthy
+
+  runtime-console:
+    image: ${RUNTIME_CONSOLE_IMAGE:-agent-runtime-console:local}
+    environment:
+      VITE_RUNTIME_BASE_PATH: /api/v1/runtime
+    ports:
+      - "${RUNTIME_CONSOLE_PORT:-8080}:80"
+    depends_on:
+      runtime-api:
+        condition: service_healthy
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:18.0}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-runtime}
+      POSTGRES_DB: ${POSTGRES_DB:-runtime}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - runtime-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:8.2.1}
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}
+    command: server /data --console-address ":9001"
+    environment:
+      # The runtime client and the MinIO server deliberately share the same
+      # injected secret references; no credential is copied into source.
+      MINIO_ROOT_USER: ${RUNTIME_MINIO_ACCESS_KEY:?set RUNTIME_MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${RUNTIME_MINIO_SECRET_KEY:?set RUNTIME_MINIO_SECRET_KEY}
+    volumes:
+      - runtime-minio:/data
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.5.0}
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:12.1.1}
+    volumes:
+      - runtime-grafana:/var/lib/grafana
+      - ../grafana/runtime-dashboard.json:/var/lib/grafana/dashboards/runtime-dashboard.json:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  model-gateway:
+    image: ${RUNTIME_MODEL_GATEWAY_IMAGE:-model-gateway:local}
+    environment:
+      MODEL_GATEWAY_UPSTREAM_URL: ${MODEL_GATEWAY_UPSTREAM_URL:?set MODEL_GATEWAY_UPSTREAM_URL}
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:?set MODEL_GATEWAY_API_KEY}
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  tool-gateway:
+    image: ${RUNTIME_TOOL_GATEWAY_IMAGE:-tool-gateway:local}
+    environment:
+      TOOL_GATEWAY_UPSTREAM_URL: ${TOOL_GATEWAY_UPSTREAM_URL:?set TOOL_GATEWAY_UPSTREAM_URL}
+      TOOL_GATEWAY_API_KEY: ${RUNTIME_TOOL_GATEWAY_API_KEY:?set RUNTIME_TOOL_GATEWAY_API_KEY}
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  runtime-postgres:
+  runtime-minio:
+  runtime-grafana:

@@ -1,0 +1,29 @@
+[Unit]
+Description=Enterprise Agent Runtime Worker (apps.runtime_worker.consumer:TaskConsumer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent-runtime
+Group=agent-runtime
+WorkingDirectory=/opt/agent-runtime
+EnvironmentFile=/etc/agent-runtime/runtime.env
+Environment=PYTHONUNBUFFERED=1
+Environment=RUNTIME_WORKER_ENTRYPOINT=apps.runtime_worker.consumer:TaskConsumer
+Environment=RUNTIME_DEEPAGENTS_SDK_VERSION=0.7.7
+# The release image/package supplies this long-running launcher. It must
+# construct TaskConsumer and bind the verified principal and Redis queue.
+ExecStart=/opt/agent-runtime/bin/runtime-worker --env-file /etc/agent-runtime/runtime.env
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agent-runtime
+
+[Install]
+WantedBy=multi-user.target

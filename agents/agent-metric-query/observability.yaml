@@ -1,0 +1,2 @@
+emit_runtime_events: true
+schema_version: agent.observability.v1

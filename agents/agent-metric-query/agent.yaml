@@ -1,0 +1,4 @@
+model:
+  ref: model://metric-query-primary
+name: Metric Query Agent
+schema_version: agent.definition.v1

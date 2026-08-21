@@ -1,0 +1,49 @@
+[project]
+name = "enterprise-agent-runtime"
+version = "0.1.0"
+description = "Enterprise Agent Runtime migration workspace"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic>=1.16,<2",
+  "asyncpg>=0.30,<1",
+  "deepagents==0.7.7",
+  "fastapi>=0.116,<1",
+  "langgraph-checkpoint-postgres==3.1.2",
+  "minio>=7.2,<8",
+  "prometheus-client>=0.22,<1",
+  "pydantic>=2.11,<3",
+  "psycopg[binary]>=3.2,<4",
+  "pyyaml>=6.0,<7",
+  "redis>=6.4,<7",
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[dependency-groups]
+dev = [
+  "pyright>=1.1.403,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+include = ["apps", "packages", "tests"]
+exclude = ["legacy"]

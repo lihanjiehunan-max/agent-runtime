@@ -2,3 +2,9 @@ data/
 coverage/
 *.log
 .DS_Store
+.worktrees/
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
