@@ -1,0 +1,20 @@
+[project]
+name = "agent-runtime-validation"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "deepagents==0.7.7",
+  "fastapi",
+  "langchain-openai",
+  "pydantic>=2",
+  "socksio",
+  "uvicorn[standard]",
+]
+
+[dependency-groups]
+dev = ["httpx", "pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["real_gateway: calls the configured external model gateway"]

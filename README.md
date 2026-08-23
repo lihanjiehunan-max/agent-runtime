@@ -2,6 +2,25 @@
 
 企业级 Agent Runtime 的加固版一期工程基线。项目以无容器、零外部依赖的 Node.js 24 + SQLite 模块化单体验证运行时核心不变量，当前定位是 **Runtime Kernel / 架构验证基线**，不是完整的生产级 Host+Cloud Runtime。
 
+## Python Session SSE 服务 MVP
+
+仓库同时包含一个独立的 Python 3.12 验证服务，用于通过写死的 `shipping-operations-analyst` Skill 和 `gpt-5.6-sol` 网关验证以下最小链路：
+
+- 运维显式部署 Agent Instance；
+- 业务调用方使用逻辑 Agent ID 创建 Session；
+- 通过 `POST /api/v1/runtime/sessions/{session_id}/chat` 获取真实 `text/event-stream` 输出；
+- 同一 Session 保留多轮上下文，且业务响应不包含 Agent Instance 信息。
+
+快速启动：
+
+```bash
+MODEL_API_KEY='<configured locally>' \
+SERVICE_API_KEY='<configured locally>' \
+uv run uvicorn apps.validation_runtime.main:app --host 0.0.0.0 --port 8000
+```
+
+详细配置、curl 示例、代理要求和三轮验收见 [`docs/operations/session-sse-service.md`](docs/operations/session-sse-service.md)。该服务使用内存状态，重启会丢失 Agent Instance、Session 和对话上下文。
+
 ## 本轮完成的加固
 
 - Context 使用租户隔离的不透明引用；相同内容跨租户、跨密级不再发生全局主键冲突。
