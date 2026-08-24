@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "agent_id": "shipping-analyst",
+  "version": "0.1.0",
+  "runtime": "deepagents-python",
+  "model_gateway_id": "zero-api-gpt-5.6-sol",
+  "skills": ["shipping-operations-analyst"],
+  "limits": {
+    "execution_timeout_seconds": 120,
+    "max_input_characters": 12000
+  }
+}

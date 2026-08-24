@@ -1,0 +1,10 @@
+{
+  "id": "zero-api-gpt-5.6-sol",
+  "provider": "openai-compatible",
+  "base_url": "https://token.zero-api.cc.cd/v1",
+  "model": "gpt-5.6-sol",
+  "api_mode": "chat_completions",
+  "api_key_env": "MODEL_API_KEY",
+  "connect_timeout_seconds": 10,
+  "read_timeout_seconds": 120
+}
