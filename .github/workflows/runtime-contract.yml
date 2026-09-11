@@ -1,0 +1,38 @@
+name: Locked runtime contract
+on:
+  push:
+    branches: [feat/distributed-harness-20260911]
+    paths: ['.github/workflows/runtime-contract.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install uv
+          uv sync --frozen
+          mkdir -p contract/wheels
+          uv pip freeze > contract/exact.txt
+          uv run python - <<'PY' > contract/interfaces.txt
+          import inspect, deepagents
+          from langgraph.checkpoint.base import BaseCheckpointSaver
+          from langgraph.checkpoint.memory import InMemorySaver
+          print('CREATE', inspect.signature(deepagents.create_deep_agent))
+          print('PROFILE', inspect.signature(deepagents.HarnessProfile))
+          for name in ['put', 'get_tuple', 'put_writes', 'get_next_version']:
+              print(name, inspect.getsource(getattr(InMemorySaver, name)))
+          print(inspect.getsource(BaseCheckpointSaver))
+          PY
+          python -m pip download --only-binary=:all: --python-version 3.13 -r contract/exact.txt -d contract/wheels
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: locked-runtime-contract
+          path: contract/
+          retention-days: 7
