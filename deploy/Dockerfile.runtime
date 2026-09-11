@@ -1,7 +1,7 @@
 FROM node:24-alpine AS console-build
 WORKDIR /console
 COPY apps/runtime_console/package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+RUN npm ci --no-audit --no-fund
 COPY apps/runtime_console/ ./
 RUN npm run build
 

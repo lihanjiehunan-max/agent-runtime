@@ -1,0 +1,66 @@
+name: Live runtime acceptance gate
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/distributed-harness-20260911]
+    paths: ['.github/workflows/live-runtime-acceptance.yml']
+permissions:
+  contents: read
+jobs:
+  live-read-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MODEL_BASE_URL: ${{ secrets.MODEL_BASE_URL }}
+      MODEL_NAME: ${{ vars.MODEL_NAME }}
+      MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+      TOOL_BASE_URL: ${{ secrets.TOOL_BASE_URL }}
+      TOOL_API_TOKEN: ${{ secrets.TOOL_API_TOKEN }}
+      LIVE_METRIC_ID: ${{ secrets.LIVE_METRIC_ID }}
+      LIVE_PERIOD: ${{ secrets.LIVE_PERIOD }}
+      LIVE_ORG: ${{ secrets.LIVE_ORG }}
+      LIVE_DIMENSION: ${{ secrets.LIVE_DIMENSION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create isolated infrastructure credentials
+        run: |
+          mkdir -p validation-results
+          python scripts/generate_runtime_env.py --output deploy/live-ci.env
+      - name: Require real model and tool configuration
+        run: |
+          set -a
+          . deploy/live-ci.env
+          set +a
+          python scripts/check_live_configuration.py --output validation-results/live-configuration.json
+      - name: Start isolated live integration environment
+        run: |
+          docker compose --env-file deploy/live-ci.env -p dh-live-validation -f deploy/compose.infrastructure.yml -f deploy/compose.runtime.yml up -d --build --wait --wait-timeout 180
+      - name: Read-only conversation and real Worker restart
+        run: |
+          python -m pip install httpx==0.28.1
+          set -a
+          . deploy/live-ci.env
+          set +a
+          python scripts/validate_live_runtime.py --restart-worker --project dh-live-validation --env-file deploy/live-ci.env
+      - name: Record redacted provenance
+        if: always()
+        run: git rev-parse HEAD > validation-results/tested-commit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-runtime-redacted-evidence
+          path: |
+            validation-results/live-configuration.json
+            validation-results/live-acceptance.json
+            validation-results/tested-commit.txt
+          retention-days: 14
+      - name: Remove isolated infrastructure
+        if: always()
+        run: |
+          if [ -f deploy/live-ci.env ]; then
+            docker compose --env-file deploy/live-ci.env -p dh-live-validation -f deploy/compose.infrastructure.yml -f deploy/compose.runtime.yml down -v --remove-orphans 2>/dev/null || true
+            rm -f deploy/live-ci.env
+          fi

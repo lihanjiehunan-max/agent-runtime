@@ -1,4 +1,4 @@
-name: Docker distributed production validation
+name: Docker distributed runtime verification
 on:
   push:
     branches: [feat/distributed-harness-20260911]
@@ -25,6 +25,12 @@ jobs:
           python -m pip install -r requirements-distributed.lock
           git rev-parse HEAD > validation-results/tested-commit.txt
           python -m pip freeze > validation-results/python-environment.txt
+      - name: Build React console
+        working-directory: apps/runtime_console
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build
       - name: Regressions
         run: |
           set -o pipefail
@@ -43,6 +49,22 @@ jobs:
         run: |
           set -o pipefail
           python scripts/validate_docker_cluster.py 2>&1 | tee validation-results/acceptance.log
+      - name: Bounded synthetic load
+        run: |
+          set -o pipefail
+          python scripts/validate_runtime_soak.py --seconds 60 --concurrency 8 --max-tasks 500 | tee validation-results/bounded-load.log
+      - name: Build release images without fixture services
+        run: |
+          docker build -f deploy/Dockerfile.runtime --target runtime -t agent-runtime:delivery .
+          docker run --rm --entrypoint python agent-runtime:delivery -c "from pathlib import Path; assert not Path('/app/tests').exists(); from apps.distributed_runtime.api import create_app"
+          docker build -f deploy/Dockerfile.runtime --target console -t agent-runtime-console:delivery .
+      - name: Release topology HTTP and proxy smoke
+        run: python scripts/validate_release_compose.py
+      - name: Browser acceptance
+        run: |
+          python -m pip install playwright==1.55.0
+          python -m playwright install --with-deps chromium
+          python scripts/validate_console_browser.py
       - name: Capture evidence and source
         if: always()
         run: |
@@ -51,6 +73,8 @@ jobs:
           docker compose -p dh-validation -f deploy/compose.validation.yml logs --no-color > validation-results/container-logs.txt 2>&1 || true
           docker stats --no-stream > validation-results/resources.txt 2>&1 || true
           docker images --digests --no-trunc > validation-results/images.txt 2>&1 || true
+          cp apps/runtime_console/package-lock.json validation-results/console-package-lock.json
+          tar -czf validation-results/console-dist.tar.gz -C apps/runtime_console dist
           git archive --format=zip --output=validation-results/source.zip HEAD
           sha256sum validation-results/source.zip > validation-results/source.sha256
       - uses: actions/upload-artifact@v4

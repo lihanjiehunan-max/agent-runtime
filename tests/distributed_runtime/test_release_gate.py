@@ -42,3 +42,10 @@ def test_read_only_pending_crash_does_not_create_manual_write_gate(tmp_path):
         assert EffectLedger(store).list(e['id'])[0]['status']=='NOT_EXECUTED'
         assert store.resume(e['id'])['status']=='QUEUED'
     finally: store.db.close()
+
+def test_proxy_security_headers_are_not_shadowed_by_location_headers():
+    """Nginx replaces server-level add_header inheritance when a location adds one."""
+    import re
+    config=(ROOT/'deploy/nginx.runtime.conf').read_text()
+    location=re.search(r'location / \{([^}]+)\}',config).group(1)
+    assert 'add_header' not in location, 'Location shadows CSP and no-referrer headers'

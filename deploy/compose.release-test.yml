@@ -1,0 +1,17 @@
+# Explicit synthetic overlay used ONLY by validate_release_compose.py.
+# compose.runtime.yml has no fallback to this file or to this gateway.
+services:
+  api-a:
+    environment: {RUNTIME_PROFILE: synthetic}
+  api-b:
+    environment: {RUNTIME_PROFILE: synthetic}
+  worker-a:
+    environment: {RUNTIME_PROFILE: synthetic}
+  worker-b:
+    environment: {RUNTIME_PROFILE: synthetic}
+  worker-c:
+    environment: {RUNTIME_PROFILE: synthetic}
+  gateway:
+    image: agent-runtime-validation:local
+    command: ["python", "-m", "uvicorn", "tests.distributed_runtime.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: {FIXTURE_DB: /tmp/effects.db}
