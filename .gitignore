@@ -3,3 +3,9 @@ coverage/
 .worktrees/
 *.log
 .DS_Store
+__pycache__/
+*.pyc
+.venv/
+.env
+validation-results/
+.runtime-artifacts/

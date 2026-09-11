@@ -1,0 +1,124 @@
+# Isolated synthetic acceptance environment. Not production credentials/config.
+x-runtime: &runtime
+  image: agent-runtime-validation:local
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.validation
+  init: true
+  restart: "no"
+  stop_grace_period: 8s
+  read_only: true
+  tmpfs: ["/tmp:size=64m"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  mem_limit: 768m
+  environment: &env
+    RUNTIME_DATABASE_URL: "postgresql+psycopg://runtime:validation-db-only@postgres/runtime?connect_timeout=3&options=-c%20statement_timeout=8000"
+    RUNTIME_API_TOKEN: "docker-validation-token-only"
+    RUNTIME_REDIS_URL: "redis://redis:6379/0"
+    RUNTIME_LEASE_SECONDS: "6"
+    RUNTIME_S3_BUCKET: "runtime-validation"
+    RUNTIME_S3_ENDPOINT: "http://minio:9000"
+    AWS_ACCESS_KEY_ID: "validation-minio"
+    AWS_SECRET_ACCESS_KEY: "validation-minio-secret-only"
+    AWS_DEFAULT_REGION: "us-east-1"
+    AWS_EC2_METADATA_DISABLED: "true"
+    MODEL_BASE_URL: "http://gateway:8000/v1"
+    MODEL_API_KEY: "fixture-only-not-a-real-key"
+    MODEL_NAME: "fixture"
+    TOOL_BASE_URL: "http://gateway:8000"
+    WORKER_SLOTS: "2"
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+    minio: {condition: service_healthy}
+    gateway: {condition: service_healthy}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: runtime
+      POSTGRES_PASSWORD: validation-db-only
+      POSTGRES_DB: runtime
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U runtime -d runtime"]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+    mem_limit: 512m
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    mem_limit: 256m
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: validation-minio
+      MINIO_ROOT_PASSWORD: validation-minio-secret-only
+    volumes: ["s3data:/data"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+    mem_limit: 512m
+  gateway:
+    image: agent-runtime-validation:local
+    command: ["python", "-m", "uvicorn", "tests.distributed_runtime.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
+    hostname: gateway
+    environment: {FIXTURE_DB: /tmp/effects.db}
+    ports: ["127.0.0.1:28090:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+    mem_limit: 384m
+  api-a:
+    <<: *runtime
+    hostname: api-a
+    ports: ["127.0.0.1:28080:8000"]
+    healthcheck: &api-health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+  api-b:
+    <<: *runtime
+    hostname: api-b
+    ports: ["127.0.0.1:28081:8000"]
+    healthcheck: *api-health
+  worker-a:
+    <<: *runtime
+    hostname: worker-a
+    command: ["python", "-m", "apps.distributed_runtime.worker"]
+    environment:
+      <<: *env
+      WORKER_CAPABILITIES: coordinator
+  worker-b:
+    <<: *runtime
+    hostname: worker-b
+    command: ["python", "-m", "apps.distributed_runtime.worker"]
+    environment:
+      <<: *env
+      WORKER_CAPABILITIES: analysis
+  worker-c:
+    <<: *runtime
+    hostname: worker-c
+    command: ["python", "-m", "apps.distributed_runtime.worker"]
+    environment:
+      <<: *env
+      WORKER_CAPABILITIES: analysis
+volumes:
+  pgdata:
+  redisdata:
+  s3data:

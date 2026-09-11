@@ -1,0 +1,64 @@
+name: Docker distributed production validation
+on:
+  push:
+    branches: [feat/distributed-harness-20260911]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  docker-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUN_DOCKER_ACCEPTANCE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install locked verification environment
+        run: |
+          mkdir -p validation-results
+          python -m pip install -r requirements-distributed.lock
+          git rev-parse HEAD > validation-results/tested-commit.txt
+          python -m pip freeze > validation-results/python-environment.txt
+      - name: Regressions
+        run: |
+          set -o pipefail
+          python -m pytest tests -m 'not real_gateway' --junitxml=validation-results/python.xml -q | tee validation-results/python.log
+          npm test | tee validation-results/node.log
+      - name: Validate and build Docker image
+        run: |
+          set -o pipefail
+          docker compose -p dh-validation -f deploy/compose.validation.yml config --quiet
+          docker compose -p dh-validation -f deploy/compose.validation.yml build api-a 2>&1 | tee validation-results/build.log
+      - name: Start independent nodes and real backing services
+        run: |
+          set -o pipefail
+          docker compose -p dh-validation -f deploy/compose.validation.yml up -d --no-build --wait --wait-timeout 180 2>&1 | tee validation-results/startup.log
+      - name: Distributed load and fault injection acceptance
+        run: |
+          set -o pipefail
+          python scripts/validate_docker_cluster.py 2>&1 | tee validation-results/acceptance.log
+      - name: Capture evidence and source
+        if: always()
+        run: |
+          mkdir -p validation-results
+          docker compose -p dh-validation -f deploy/compose.validation.yml ps -a > validation-results/containers.txt 2>&1 || true
+          docker compose -p dh-validation -f deploy/compose.validation.yml logs --no-color > validation-results/container-logs.txt 2>&1 || true
+          docker stats --no-stream > validation-results/resources.txt 2>&1 || true
+          docker images --digests --no-trunc > validation-results/images.txt 2>&1 || true
+          git archive --format=zip --output=validation-results/source.zip HEAD
+          sha256sum validation-results/source.zip > validation-results/source.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-production-validation
+          path: validation-results/
+          retention-days: 14
+      - name: Remove isolated test environment
+        if: always()
+        run: docker compose -p dh-validation -f deploy/compose.validation.yml down -v --remove-orphans || true
