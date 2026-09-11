@@ -1,6 +1,7 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {SSEParser} from './stream.mjs';
+import {PendingSubmissions} from './submission.mjs';
 import './style.css';
 
 type Row=Record<string,any>;
@@ -26,7 +27,7 @@ function App(){
   const [busy,setBusy]=useState(false),[streaming,setStreaming]=useState(false);
   const [evidence,setEvidence]=useState(''),[receipt,setReceipt]=useState('{}');
   const token=useRef(''),generation=useRef(0),abort=useRef<AbortController|null>(null),cursor=useRef(0);
-  const requestKey=useRef<{session:string;message:string;key:string}|null>(null);
+  const submissions=useRef(new PendingSubmissions()),submitting=useRef(false);
   const activeSession=useRef(''); activeSession.current=session;
 
   async function call(path:string,method='GET',body?:unknown){
@@ -35,7 +36,7 @@ function App(){
       headers:{Authorization:'Bearer '+token.current,...(body===undefined?{}:{'Content-Type':'application/json'})},
       body:body===undefined?undefined:JSON.stringify(body)});
     if(epoch!==generation.current) throw new DOMException('Old connection','AbortError');
-    if(!r.ok){const text=await r.text();throw new Error(`${r.status} · ${text.slice(0,400)}`)}
+    if(!r.ok){const text=await r.text();throw Object.assign(new Error(`${r.status} · ${text.slice(0,400)}`),{status:r.status})}
     return r.json();
   }
   async function act(fn:()=>Promise<void>){setBusy(true);setNotice('');try{await fn()}catch(e){
@@ -47,7 +48,7 @@ function App(){
     setStats({...s,about});setWorkers(w);setInstances(ins);setSessions(ss.items);setExecutions(ee.items);
   }
   async function connect(){token.current=credential.trim();await refresh();setConnected(true);setNotice('已连接。凭据仅保存在当前页面内存。')}
-  function logout(){generation.current++;abort.current?.abort();token.current='';setCredential('');setConnected(false);
+  function logout(){generation.current++;submissions.current.clear();abort.current?.abort();token.current='';setCredential('');setConnected(false);
     setInstances([]);setWorkers([]);setStats({});setSessions([]);setExecutions([]);setHistory([]);setTrace(null);setDetail(null);
     setEvents([]);setSession('');setCurrent('');setLiveText('');setStreaming(false);setNotice('已断开；服务器中的任务不会因此取消。')}
   useEffect(()=>{if(!connected)return;const timer=setInterval(()=>refresh().catch(()=>{}),2500);
@@ -56,7 +57,7 @@ function App(){
   async function loadHistory(sid:string){const data=await call(base+'/sessions/'+encodeURIComponent(sid)+'/history?limit=100');
     if(activeSession.current===sid)setHistory(data.items)}
   async function pickSession(sid:string){abort.current?.abort();setStreaming(false);activeSession.current=sid;setSession(sid);
-    setCurrent('');setLiveText('');setEvents([]);setTrace(null);requestKey.current=null;await loadHistory(sid)}
+    setCurrent('');setLiveText('');setEvents([]);setTrace(null);setInput(submissions.current.pending(sid)?.message||'');await loadHistory(sid)}
   async function createSession(){const s=await call(base+'/agents/'+encodeURIComponent(agent)+'/sessions','POST');
     await pickSession(s.session_id);await refresh()}
   async function inspect(eid:string){const data=await call(base+'/ops/executions/'+encodeURIComponent(eid)+'/trace');
@@ -91,15 +92,19 @@ function App(){
     }finally{if(abort.current===control)setStreaming(false)}
   }
   async function send(){
-    if(!session||!input.trim())return;const message=input.trim();
-    if(!requestKey.current||requestKey.current.session!==session||requestKey.current.message!==message)
-      requestKey.current={session,message,key:crypto.randomUUID()};
-    const e=await call(base+'/sessions/'+encodeURIComponent(session)+'/executions','POST',
-      {message,request_key:requestKey.current.key});
-    requestKey.current=null;setInput('');setCurrent(e.execution_id);await loadHistory(session);
-    // Do not bind execution lifetime to this browser connection.
-    readStream(e.execution_id,session).catch(e=>setNotice('连接已中断，任务仍在服务器执行。'+String(e)));
-    await refresh();
+    if(!session||!input.trim()||streaming||submitting.current)return;
+    const sid=session,message=input.trim(),epoch=generation.current;
+    submitting.current=true;
+    try{
+      const e=await submissions.current.submit(sid,message,(body:unknown)=>
+        call(base+'/sessions/'+encodeURIComponent(sid)+'/executions','POST',body));
+      if(epoch!==generation.current||activeSession.current!==sid)return;
+      setInput(value=>value.trim()===message?'':value);setCurrent(e.execution_id);await loadHistory(sid);
+      // Do not attach an old submission's stream after navigating away.
+      if(epoch!==generation.current||activeSession.current!==sid)return;
+      readStream(e.execution_id,sid).catch(e=>setNotice('连接已中断，任务仍在服务器执行。'+String(e)));
+      await refresh();
+    }finally{submitting.current=false}
   }
   async function deploy(){const p=JSON.parse(packageText);await call(base+'/ops/agents/deploy','POST',p);
     setAgent(p.agent_id);await refresh();setNotice('已发布 '+p.agent_id+' @ '+p.version+'；已有会话仍使用原版本。')}

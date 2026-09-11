@@ -55,7 +55,18 @@ async def completion(body:dict):
     last_user=max((i for i,m in enumerate(messages) if m['role']=='user'),default=-1)
     receipts=[m.get('content','') for m in messages[last_user+1:] if m['role']=='tool']
     calls=[]
-    if not receipts and current.startswith('TEAM:'):
+    if not receipts and current.startswith('TEAM_LARGE:'):
+        calls=[{'id':'large-delegate','type':'function','function':{'name':'delegate',
+            'arguments':json.dumps({'children':[{'agent_id':'child','version':'1',
+                'input':{'message':'LARGE_CHILD:payload'}}]})}}]
+    elif receipts and current.startswith('TEAM_LARGE:') and messages[-1].get('tool_call_id')=='large-delegate':
+        try: descriptors=json.loads(receipts[-1])
+        except ValueError: descriptors=[]  # Baseline may offload to its internal filesystem.
+        if descriptors and 'result' not in descriptors[0]:
+            calls=[{'id':'large-page','type':'function','function':{'name':'read_child_result',
+                'arguments':json.dumps({'execution_id':descriptors[0]['execution_id'],
+                    'offset':80000,'limit':1000})}}]
+    elif not receipts and current.startswith('TEAM:'):
         calls=[{'id':'delegate-'+hashlib.sha256(current.encode()).hexdigest()[:12],'type':'function',
                 'function':{'name':'delegate','arguments':json.dumps({'children':[
                     {'agent_id':'child','version':'1','input':{'message':'SLOW:0.3:child-A:'+current}},
@@ -71,6 +82,10 @@ async def completion(body:dict):
         try:delay=min(60,max(0,float(current.split(':',2)[1])))
         except ValueError: pass
     text='complete: '+receipts[-1] if receipts else 'users: '+json.dumps(users,ensure_ascii=False)
+    if current.startswith('LARGE_CHILD:'):
+        text='大结果🌊'*20000+':tail-proof'
+    if receipts and current.startswith('TEAM_LARGE:') and messages[-1].get('tool_call_id')=='large-delegate' and not calls:
+        text='ERROR: unbounded delegated result'
     stamp=int(time.time())
     ident='chatcmpl-fixture-'+hashlib.sha256(current.encode()).hexdigest()[:12]
     def chunk(delta,finish=None):
@@ -83,9 +98,10 @@ async def completion(body:dict):
             yield 'data: '+json.dumps(chunk({'tool_calls':[dict(c,index=i) for i,c in enumerate(calls)]}))+'\n\n'
             yield 'data: '+json.dumps(chunk({},'tool_calls'))+'\n\n'
         else:
-            for start in range(0,len(text),24):
+            step=4096 if current.startswith('LARGE_CHILD:') else 24
+            for start in range(0,len(text),step):
                 await asyncio.sleep(.015)
-                yield 'data: '+json.dumps(chunk({'content':text[start:start+24]}))+'\n\n'
+                yield 'data: '+json.dumps(chunk({'content':text[start:start+step]}))+'\n\n'
             yield 'data: '+json.dumps(chunk({},'stop'))+'\n\n'
         yield 'data: [DONE]\n\n'
     if body.get('stream'):

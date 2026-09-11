@@ -11,6 +11,7 @@ from .checkpoints import FencedSQLSaver
 from .store import Conflict, TERMINAL
 from .tools import EffectLedger, HttpToolGateway
 from .telemetry import RuntimeCallbacks
+from .child_results import ChildResultAccess
 
 DISABLED = frozenset({'ls','read_file','write_file','edit_file','delete','glob','grep','execute','task'})
 
@@ -35,9 +36,12 @@ class DeepAgentsHarness:
         store, artifacts = self.store, self.artifacts
         tools = []
         if package.get('allowed_agents'):
+            child_access = ChildResultAccess(store, artifacts)
             @tool
             def delegate(children: list[dict], runtime: ToolRuntime) -> list[dict]:
-                """Delegate independent tasks. Each child specifies agent_id, version and input."""
+                """Delegate tasks with agent_id, version and input. Large results return prefix
+                excerpts and output_ref; use read_child_result for missing details.
+                """
                 key = runtime.tool_call_id
                 store.spawn(claim, key, children)
                 results = store.child_results(claim.execution_id, key)
@@ -46,8 +50,17 @@ class DeepAgentsHarness:
                     results = store.child_results(claim.execution_id, key)
                 if any(x['status'] != 'COMPLETED' for x in results):
                     raise Conflict('A delegated child did not complete successfully')
-                return [dict(x, result=artifacts.get_json(x['output_ref'])) for x in results]
-            tools.append(delegate)
+                return child_access.summaries(claim, key)
+            @tool
+            async def read_child_result(execution_id: str, runtime: ToolRuntime,
+                                        offset: int = 0, limit: int = 2048) -> dict:
+                """Read a completed direct child's result by character offset.
+
+                At most 2048 characters per call. Use only the execution_id returned
+                by delegate, and read details only when the prefix is insufficient.
+                """
+                return await asyncio.to_thread(child_access.read, claim, execution_id, offset, limit)
+            tools.extend([delegate, read_child_result])
         if package.get('tools'):
             if set(package['tools']) - {'query_metric', 'record_metric'}:
                 raise Conflict('Tool is not registered in this runtime')

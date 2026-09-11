@@ -45,7 +45,8 @@ def main():
             ready(f'http://127.0.0.1:{api_port}')
             start('worker',['-m','apps.distributed_runtime.worker'])
             with sync_playwright() as p:
-                browser=p.chromium.launch(headless=True,args=['--no-sandbox'])
+                browser=p.chromium.launch(headless=True,args=['--no-sandbox'],
+                    executable_path=os.environ.get('CHROMIUM_EXECUTABLE') or None)
                 page=browser.new_page(viewport={'width':1500,'height':1000},device_scale_factor=1)
                 errors=[];page.on('pageerror',lambda exc:errors.append(str(exc)))
                 page.goto(f'http://127.0.0.1:{api_port}')
@@ -71,6 +72,50 @@ def main():
                 expect(page.get_by_test_id('assistant-answer').nth(1)).to_contain_text('browser-proof',timeout=30000)
                 expect(page.locator('.message.assistant .s-COMPLETED')).to_have_count(2,timeout=30000)
                 report['checks'].append('two-turn-persistent-session-and-sse')
+                # Commit a real POST, then drop only its HTTP response. Retry after
+                # selecting another Session; a new key would silently create a duplicate.
+                lost_posts=[]; dropped=[False]
+                def lose_response(route):
+                    request=route.request
+                    body=request.post_data_json
+                    response=route.fetch()
+                    if body.get('message')=='remember:response-loss-proof':
+                        record=response.json()
+                        lost_posts.append({'key':body['request_key'],'execution_id':record.get('execution_id'),
+                                           'session_id':record.get('session_id'),'status':response.status})
+                        if not dropped[0]:
+                            dropped[0]=True
+                            route.abort('connectionreset')
+                            return
+                    route.fulfill(response=response)
+                page.route('**/sessions/*/executions',lose_response)
+                page.get_by_label('发送消息').fill('remember:response-loss-proof')
+                page.get_by_role('button',name='发送',exact=True).click()
+                expect(page.get_by_role('status')).to_contain_text('fetch',timeout=10000)
+                assert len(lost_posts)==1 and lost_posts[0]['status']==202
+                first=lost_posts[0]
+                with httpx.Client(headers={'Authorization':'Bearer '+env['RUNTIME_OPS_TOKEN']},timeout=5) as client:
+                    for _ in range(150):
+                        state=client.get(f'http://127.0.0.1:{api_port}/api/v1/runtime/executions/'+first['execution_id']).json()
+                        if state['status']=='COMPLETED':break
+                        time.sleep(.1)
+                    assert state['status']=='COMPLETED',state
+                page.get_by_role('button',name='创建会话',exact=True).click()
+                expect(page.locator('.sessionlist button')).to_have_count(2,timeout=10000)
+                page.locator('.sessionlist button').filter(has_text=first['session_id'][:13]).click()
+                page.get_by_label('发送消息').fill('remember:response-loss-proof')
+                page.get_by_role('button',name='发送',exact=True).click()
+                for _ in range(100):
+                    if len(lost_posts)==2:break
+                    page.wait_for_timeout(50)
+                assert len(lost_posts)==2 and lost_posts[1]['status']==202,lost_posts
+                assert lost_posts[0]['key']==lost_posts[1]['key'],'Session navigation changed an ambiguous submission key'
+                assert lost_posts[0]['execution_id']==lost_posts[1]['execution_id'],'Duplicate execution after lost response'
+                expect(page.locator('.message.assistant .s-COMPLETED')).to_have_count(3,timeout=10000)
+                report['checks'].append('lost-post-response-session-switch-idempotent-replay')
+                report['lost_response']={'http_posts':len(lost_posts),'logical_executions':1,
+                                         'execution_id':first['execution_id'],'session_id':first['session_id']}
+                page.unroute('**/sessions/*/executions',lose_response)
                 page.get_by_role('button',name='查看证据',exact=True).click()
                 page.get_by_role('heading',name='执行证据',exact=True).wait_for()
                 expect(page.locator('.trace')).to_contain_text('LangGraph Thread')

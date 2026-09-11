@@ -125,3 +125,34 @@ async def test_uncertain_external_effect_blocks_resume(gateway,tmp_path):
         assert next(x for x in rows if x['key']==remote['key'])['requests']==1
     finally:
         w.stop_event.set();await runner;store.db.close()
+
+
+@pytest.mark.asyncio
+async def test_actual_harness_large_child_result_is_paged(gateway,tmp_path):
+    from apps.distributed_runtime.harness import DeepAgentsHarness
+    from apps.distributed_runtime.worker import Worker
+    from apps.distributed_runtime.store import Claim
+    store=Store('sqlite:///'+str(tmp_path/'large.db'),lease_seconds=6)
+    artifacts=FileArtifacts(tmp_path/'artifacts')
+    store.deploy(package('parent',allowed_agents=['child']));store.deploy(package('child'))
+    harness=DeepAgentsHarness(store,artifacts,model_url=gateway+'/v1',model_key='fixture-only')
+    worker=Worker(store,harness,worker_id='large-result-worker',slots=1)
+    runner=asyncio.create_task(worker.run())
+    try:
+        sid=store.create_session('parent')['id']
+        e=store.submit(sid,'large-result',{'message':'TEAM_LARGE:report'})
+        done=await finish(store,e['id'])
+        assert 'tail-proof' in artifacts.get_json(done['output_ref'])['message']
+        events=store.events(e['id'])
+        assert any(x['type']=='child_result.summarized' for x in events)
+        assert any(x['type']=='child_result.read' and x['payload']['offset']==80000 for x in events)
+        graph=harness.build(Claim(e['id'],'large-result-worker',done['epoch']))
+        # Let LangGraph reconstruct delta-channel snapshots via its public API.
+        state=await graph.aget_state({'configurable':{'thread_id':sid}})
+        tool_messages=[m for m in state.values['messages'] if getattr(m,'type',None)=='tool']
+        delegated=next(m for m in tool_messages if m.name=='delegate')
+        assert len(delegated.content.encode())<20000
+        assert 'tail-proof' not in delegated.content
+        assert any(m.name=='read_child_result' and 'tail-proof' in m.content for m in tool_messages)
+    finally:
+        worker.stop_event.set();await runner;store.db.close()
