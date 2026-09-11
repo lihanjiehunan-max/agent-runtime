@@ -31,7 +31,7 @@ class EffectLedger:
             else:
                 c.execute(t.effects.insert().values(execution_id=claim.execution_id,call_id=call_id,
                     tool=tool,fingerprint=fp,status='PENDING'))
-            self.store._event(c,claim.execution_id,'tool.started',{'call_id':call_id,'tool':tool})
+            self.store._event(c,claim.execution_id,'tool.started',{'call_id':call_id,'tool':tool,'arguments_sha256':fingerprint(args)})
             return {'cached':False,'idempotency_key':identity}
 
     def succeed(self,claim,call_id,result):
@@ -41,7 +41,7 @@ class EffectLedger:
             row=c.execute(t.effects.update().where(t.effects.c.execution_id==claim.execution_id,
                 t.effects.c.call_id==call_id,t.effects.c.status=='PENDING').values(status='SUCCEEDED',result=result))
             if row.rowcount!=1: raise Conflict('Tool effect is not pending')
-            self.store._event(c,claim.execution_id,'tool.completed',{'call_id':call_id})
+            self.store._event(c,claim.execution_id,'tool.completed',{'call_id':call_id,'result_sha256':fingerprint(result)})
 
     def unknown(self,claim,call_id):
         with self.store.db.tx() as c:
@@ -49,6 +49,16 @@ class EffectLedger:
             c.execute(t.effects.update().where(t.effects.c.execution_id==claim.execution_id,
                 t.effects.c.call_id==call_id,t.effects.c.status=='PENDING').values(status='UNKNOWN'))
             self.store._event(c,claim.execution_id,'tool.unknown',{'call_id':call_id})
+
+    def read_failed(self,claim,call_id):
+        """Only the registered read-only operation may release a failed receipt."""
+        with self.store.db.tx() as c:
+            self.store.owned(c,claim)
+            row=c.execute(t.effects.update().where(t.effects.c.execution_id==claim.execution_id,
+                t.effects.c.call_id==call_id,t.effects.c.tool=='query_metric',
+                t.effects.c.status=='PENDING').values(status='NOT_EXECUTED'))
+            if row.rowcount:
+                self.store._event(c,claim.execution_id,'tool.read_failed',{'call_id':call_id})
 
     def reconcile(self,execution_id,call_id,executed,result,evidence):
         if not isinstance(evidence,str) or not evidence.strip() or len(evidence)>2000:
@@ -79,11 +89,14 @@ class HttpToolGateway:
 
     async def invoke(self,claim,call_id,name,args):
         import httpx
-        import re
-        if not re.fullmatch('[a-z][a-z0-9_]{0,63}',name): raise Conflict('Invalid registered tool name')
+        if name not in {'query_metric','record_metric'}:
+            raise Conflict('Tool is not registered in this runtime')
+        if not isinstance(args,dict) or len(canonical(args))>16384:
+            raise Conflict('Tool arguments must be a bounded JSON object')
         receipt=self.ledger.begin(claim,call_id,name,args)
         if receipt['cached']: return receipt['result']
-        headers={'Idempotency-Key':receipt['idempotency_key']}
+        headers={'Idempotency-Key':receipt['idempotency_key'],
+                 'X-Runtime-Execution-Id':claim.execution_id,'X-Runtime-Call-Id':call_id}
         if self.token: headers['Authorization']='Bearer '+self.token
         try:
             async with httpx.AsyncClient(timeout=20,follow_redirects=False) as client:
@@ -96,10 +109,14 @@ class HttpToolGateway:
                         if len(body)>32768: raise Conflict('Tool response too large')
             import json
             result=json.loads(body)
+            if not isinstance(result,dict):
+                raise Conflict('Tool receipt must be a JSON object')
             self.ledger.succeed(claim,call_id,result)
             return result
         except BaseException:
             # A dropped response does not prove that the remote operation failed.
-            try: self.ledger.unknown(claim,call_id)
+            try:
+                if name=='query_metric': self.ledger.read_failed(claim,call_id)
+                else: self.ledger.unknown(claim,call_id)
             except Exception: pass  # The reaper also converts fenced PENDING effects to UNKNOWN.
             raise

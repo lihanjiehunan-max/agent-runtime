@@ -9,3 +9,7 @@ __pycache__/
 .env
 validation-results/
 .runtime-artifacts/
+
+node_modules/
+apps/runtime_console/dist/
+deploy/*.env

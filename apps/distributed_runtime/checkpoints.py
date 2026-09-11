@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple, WRITES_IDX_MAP
 from . import db as t
 from .store import Conflict
+from .integrity import seal, verify
 
 
 class FencedSQLSaver(BaseCheckpointSaver):
@@ -33,10 +34,12 @@ class FencedSQLSaver(BaseCheckpointSaver):
             row = c.execute(q.order_by(t.checkpoints.c.checkpoint_id.desc()).limit(1)).mappings().first()
             if not row:
                 return None
+            verify(c,'checkpoint',row)
             writes = c.execute(sa.select(t.checkpoint_writes).where(
                 t.checkpoint_writes.c.thread_id == thread, t.checkpoint_writes.c.namespace == ns,
                 t.checkpoint_writes.c.checkpoint_id == row['checkpoint_id']).order_by(
                     t.checkpoint_writes.c.task_id, t.checkpoint_writes.c.idx)).mappings().all()
+            for write in writes: verify(c,'write',write)
         cfg = {'configurable': {'thread_id': thread, 'checkpoint_ns': ns, 'checkpoint_id': row['checkpoint_id']}}
         parent = {'configurable': dict(cfg['configurable'], checkpoint_id=row['parent_id'])} if row['parent_id'] else None
         return CheckpointTuple(config=cfg,
@@ -74,11 +77,16 @@ class FencedSQLSaver(BaseCheckpointSaver):
             self.store.owned(c, self.claim)
             where = (t.checkpoints.c.thread_id == thread, t.checkpoints.c.namespace == ns,
                      t.checkpoints.c.checkpoint_id == ident)
-            old = c.execute(sa.select(t.checkpoints.c.checkpoint_id).where(*where)).first()
+            old = c.execute(sa.select(t.checkpoints).where(*where)).mappings().first()
             if not old:
                 c.execute(t.checkpoints.insert().values(thread_id=thread, namespace=ns, checkpoint_id=ident,
                     execution_id=self.claim.execution_id, parent_id=config['configurable'].get('checkpoint_id'),
                     type=cp_type, blob=blob, meta_type=meta_type, meta=meta))
+                self.store._event(c,self.claim.execution_id,'checkpoint.saved',
+                    {'checkpoint_id':ident,'thread_id':thread,'namespace':ns,'epoch':self.claim.epoch})
+            row=c.execute(sa.select(t.checkpoints).where(*where)).mappings().one()
+            if old: verify(c,'checkpoint',row)
+            else: seal(c,'checkpoint',row)
             if not ns:
                 c.execute(t.executions.update().where(t.executions.c.id == self.claim.execution_id).values(checkpoint_id=ident))
         return {'configurable': {'thread_id': thread, 'checkpoint_ns': ns, 'checkpoint_id': ident}}
@@ -99,6 +107,9 @@ class FencedSQLSaver(BaseCheckpointSaver):
                         c.execute(t.checkpoint_writes.update().where(*where).values(channel=channel, type=typ, blob=blob))
                 else:
                     c.execute(t.checkpoint_writes.insert().values(**values, channel=channel, type=typ, blob=blob))
+                row=c.execute(sa.select(t.checkpoint_writes).where(*where)).mappings().one()
+                if old and index>=0: verify(c,'write',row)
+                else: seal(c,'write',row)
 
     async def aget_tuple(self, config):
         return await asyncio.to_thread(self.get_tuple, config)

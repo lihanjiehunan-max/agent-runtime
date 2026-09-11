@@ -10,15 +10,17 @@ from langgraph.types import Command, interrupt
 from .checkpoints import FencedSQLSaver
 from .store import Conflict, TERMINAL
 from .tools import EffectLedger, HttpToolGateway
+from .telemetry import RuntimeCallbacks
 
 DISABLED = frozenset({'ls','read_file','write_file','edit_file','delete','glob','grep','execute','task'})
 
 
 class DeepAgentsHarness:
-    def __init__(self, store, artifacts, *, model_url, model_key, model_name='fixture', tool_url=None, model_factory=None):
+    def __init__(self, store, artifacts, *, model_url, model_key, model_name='fixture', tool_url=None, model_factory=None, tool_token=None):
         self.store, self.artifacts = store, artifacts
         self.model_url, self.model_key, self.model_name = model_url, model_key, model_name
         self.tool_url, self.model_factory = tool_url, model_factory
+        self.tool_token = tool_token
 
     def build(self, claim):
         package = self.store.package_for(claim.execution_id)
@@ -51,11 +53,20 @@ class DeepAgentsHarness:
                 raise Conflict('Tool is not registered in this runtime')
             if not self.tool_url:
                 raise Conflict('Tool gateway is not configured')
-            gateway = HttpToolGateway(EffectLedger(store), self.tool_url)
+            gateway = HttpToolGateway(EffectLedger(store), self.tool_url, token=self.tool_token)
             @tool
-            async def query_metric(metric: str, runtime: ToolRuntime) -> dict:
-                """Read a registered business metric from the configured tool gateway."""
-                return await gateway.invoke(claim, runtime.tool_call_id, 'query_metric', {'metric': metric})
+            async def query_metric(metric: str, runtime: ToolRuntime, period: str | None = None,
+                                   org: str | None = None, comparison: str | None = None,
+                                   group_by: list[str] | None = None) -> dict:
+                """Read an approved metric. Reuse the conversation's period/org for follow-ups.
+
+                comparison may be yoy or mom. group_by names business dimensions,
+                such as route. Never invent a numeric answer when the tool fails.
+                """
+                from .contracts import MetricQuery
+                args = MetricQuery(metric=metric, period=period, org=org,
+                                   comparison=comparison, group_by=group_by).model_dump(exclude_none=True)
+                return await gateway.invoke(claim, runtime.tool_call_id, 'query_metric', args)
             @tool
             async def record_metric(value: str, runtime: ToolRuntime) -> dict:
                 """Record a metric with a durable idempotency key at the configured gateway."""
@@ -67,7 +78,12 @@ class DeepAgentsHarness:
     async def execute(self, claim):
         e = await asyncio.to_thread(self.store.execution, claim.execution_id)
         graph = self.build(claim)
-        cfg = {'configurable': {'thread_id': e['session_id']}, 'recursion_limit': 50}
+        cfg = {'configurable': {'thread_id': e['session_id']}, 'recursion_limit': 50,
+               'callbacks':[RuntimeCallbacks(self.store,claim,self.model_name)]}
+        from .store import fingerprint
+        package=await asyncio.to_thread(self.store.package_for,claim.execution_id)
+        await asyncio.to_thread(self.store.emit,claim,'package.loaded',
+            {'agent_id':package['agent_id'],'version':package['version'],'digest':fingerprint(package)})
         if e['checkpoint_id']:
             cfg['configurable']['checkpoint_id'] = e['checkpoint_id']
             snapshot = await graph.aget_state(cfg)

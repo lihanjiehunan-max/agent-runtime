@@ -70,6 +70,12 @@ class Store:
         self._event(c,e['id'],'execution.queued')
 
     def deploy(self, package: dict) -> dict:
+        from pydantic import ValidationError
+        from .contracts import AgentPackage
+        try:
+            AgentPackage.model_validate(package)
+        except ValidationError:
+            raise Conflict('Invalid agent package; credentials and unknown fields are forbidden') from None
         required={'agent_id','version','engine','engine_version','prompt','capabilities','timeout'}
         if not required.issubset(package) or len(canonical(package))>262144:
             raise Conflict('Invalid or oversized package')
@@ -179,11 +185,16 @@ class Store:
 
     def worker_list(self):
         with self.db.tx(False) as c:
-            return [dict(x) for x in c.execute(sa.select(t.workers)).mappings()]
+            controls=dict(c.execute(sa.select(t.worker_controls.c.id,t.worker_controls.c.draining)).all())
+            now=self.db.now(c)
+            return [dict(x,draining=bool(controls.get(x['id'])),online=now-x['last_seen']<=max(3,self.lease_seconds*2))
+                    for x in c.execute(sa.select(t.workers)).mappings()]
 
     def claim(self,worker_id,execution_id=None):
         with self.db.tx() as c:
             w=self._row(c,t.workers,worker_id); now=self.db.now(c)
+            if c.execute(sa.select(t.worker_controls.c.draining).where(t.worker_controls.c.id==worker_id)).scalar():
+                return None
             c.execute(t.workers.update().where(t.workers.c.id==worker_id).values(last_seen=now))
             owned=c.execute(sa.select(sa.func.count()).select_from(t.executions).where(
                 t.executions.c.owner==worker_id,t.executions.c.status.in_(ACTIVE))).scalar_one()
@@ -255,6 +266,8 @@ class Store:
             t.attempts.c.epoch==e['epoch'],t.attempts.c.ended.is_(None)).values(ended=self.db.now(c),outcome=status))
 
     def _uncertain_effects(self,c,e):
+        c.execute(t.effects.update().where(t.effects.c.execution_id==e['id'],
+            t.effects.c.tool=='query_metric',t.effects.c.status=='PENDING').values(status='NOT_EXECUTED'))
         c.execute(t.effects.update().where(t.effects.c.execution_id==e['id'],t.effects.c.status=='PENDING').values(status='UNKNOWN'))
 
     def _finish(self,c,e,status,output_ref=None,error=None):

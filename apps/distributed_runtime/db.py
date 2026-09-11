@@ -61,6 +61,14 @@ effects = table('effects',col('execution_id',primary_key=True),col('call_id',sa.
     col('tool',sa.String(96),nullable=False),col('fingerprint',nullable=False),col('status',sa.String(32),nullable=False),
     col('result',sa.JSON),col('evidence',sa.Text))
 
+# Additive delivery schema. Existing rows are not silently blessed with hashes.
+seals = table('integrity_seals',col('key',primary_key=True),col('kind',sa.String(16),nullable=False),
+              col('digest',nullable=False))
+worker_controls = table('worker_controls',col('id',primary_key=True),col('draining',sa.Boolean,nullable=False))
+admin_events = table('admin_events',col('id',sa.Integer,primary_key=True,autoincrement=True),
+                     col('kind',sa.String(64),nullable=False),col('target',nullable=False),
+                     col('payload',sa.JSON,nullable=False),col('created',sa.Float,nullable=False))
+
 
 class Database:
     def __init__(self, url: str, *, initialize: bool = True):

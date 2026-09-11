@@ -1,0 +1,23 @@
+FROM node:24-alpine AS console-build
+WORKDIR /console
+COPY apps/runtime_console/package*.json ./
+RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+COPY apps/runtime_console/ ./
+RUN npm run build
+
+FROM python:3.12-slim AS runtime
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /app
+COPY requirements-distributed.lock ./
+RUN pip install --no-cache-dir -r requirements-distributed.lock && useradd --uid 10001 --create-home runtime
+COPY apps/__init__.py ./apps/__init__.py
+COPY apps/distributed_runtime ./apps/distributed_runtime
+USER 10001
+CMD ["python", "-m", "uvicorn", "apps.distributed_runtime.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM nginx:1.28-alpine AS console
+COPY deploy/nginx.runtime.conf /etc/nginx/nginx.conf
+COPY --from=console-build /console/dist /usr/share/nginx/html
+USER 101
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]

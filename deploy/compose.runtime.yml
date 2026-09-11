@@ -1,0 +1,87 @@
+# Runtime processes only. Use existing infrastructure or compose.infrastructure.yml.
+# No mock model/tool service exists in this deployment.
+x-runtime: &runtime
+  image: ${RUNTIME_IMAGE:-agent-runtime:delivery}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.runtime
+    target: runtime
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs: ["/tmp:size=64m"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  stop_grace_period: 30s
+  mem_limit: 1g
+x-infra: &infra
+  RUNTIME_PROFILE: live
+  RUNTIME_DATABASE_URL: ${RUNTIME_DATABASE_URL:?set RUNTIME_DATABASE_URL}
+  RUNTIME_REDIS_URL: ${RUNTIME_REDIS_URL:?set RUNTIME_REDIS_URL}
+  RUNTIME_S3_BUCKET: ${RUNTIME_S3_BUCKET:?set RUNTIME_S3_BUCKET}
+  RUNTIME_S3_ENDPOINT: ${RUNTIME_S3_ENDPOINT:?set RUNTIME_S3_ENDPOINT}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY}
+  AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+  AWS_EC2_METADATA_DISABLED: "true"
+  RUNTIME_LEASE_SECONDS: ${RUNTIME_LEASE_SECONDS:-15}
+x-api-env: &api-env
+  <<: *infra
+  RUNTIME_API_TOKEN: ${RUNTIME_API_TOKEN:?set separate business token}
+  RUNTIME_OPS_TOKEN: ${RUNTIME_OPS_TOKEN:?set separate operations token}
+x-worker-env: &worker-env
+  <<: *infra
+  MODEL_BASE_URL: ${MODEL_BASE_URL:?set MODEL_BASE_URL}
+  MODEL_API_KEY: ${MODEL_API_KEY:?set MODEL_API_KEY}
+  MODEL_NAME: ${MODEL_NAME:?set MODEL_NAME}
+  TOOL_BASE_URL: ${TOOL_BASE_URL:?set TOOL_BASE_URL}
+  TOOL_API_TOKEN: ${TOOL_API_TOKEN:?set TOOL_API_TOKEN}
+  WORKER_SLOTS: ${WORKER_SLOTS:-2}
+services:
+  api-a:
+    <<: *runtime
+    hostname: api-a
+    environment: *api-env
+    healthcheck: &health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  api-b:
+    <<: *runtime
+    hostname: api-b
+    environment: *api-env
+    healthcheck: *health
+  worker-a:
+    <<: *runtime
+    hostname: worker-a
+    command: ["python", "-m", "apps.distributed_runtime.worker"]
+    environment:
+      <<: *worker-env
+      WORKER_CAPABILITIES: coordinator
+  worker-b:
+    <<: *runtime
+    hostname: worker-b
+    command: ["python", "-m", "apps.distributed_runtime.worker"]
+    environment:
+      <<: *worker-env
+      WORKER_CAPABILITIES: analysis
+  worker-c:
+    <<: *runtime
+    hostname: worker-c
+    command: ["python", "-m", "apps.distributed_runtime.worker"]
+    environment:
+      <<: *worker-env
+      WORKER_CAPABILITIES: analysis
+  console:
+    image: ${CONSOLE_IMAGE:-agent-runtime-console:delivery}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.runtime
+      target: console
+    ports: ["${RUNTIME_BIND_ADDRESS:-127.0.0.1}:${RUNTIME_PORT:-3000}:8080"]
+    depends_on:
+      api-a: {condition: service_healthy}
+      api-b: {condition: service_healthy}
+    restart: unless-stopped
+    mem_limit: 128m

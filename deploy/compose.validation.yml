@@ -13,6 +13,7 @@ x-runtime: &runtime
   security_opt: ["no-new-privileges:true"]
   mem_limit: 768m
   environment: &env
+    RUNTIME_PROFILE: synthetic
     RUNTIME_DATABASE_URL: "postgresql+psycopg://runtime:validation-db-only@postgres/runtime?connect_timeout=3&options=-c%20statement_timeout=8000"
     RUNTIME_API_TOKEN: "docker-validation-token-only"
     RUNTIME_REDIS_URL: "redis://redis:6379/0"

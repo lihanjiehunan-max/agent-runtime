@@ -48,7 +48,7 @@ class Worker:
         except LostLease:
             log.warning('attempt_fenced execution=%s epoch=%s',claim.execution_id,claim.epoch)
         except Exception as exc:
-            log.exception('execution_interrupted execution=%s error=%s',claim.execution_id,type(exc).__name__)
+            log.error('execution_interrupted execution=%s error=%s',claim.execution_id,type(exc).__name__)
             try:
                 await asyncio.to_thread(self.store.interrupt, claim, type(exc).__name__)
             except Exception:
@@ -93,13 +93,13 @@ class Worker:
 
 async def main():
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
-    config = Settings.from_env()
+    config = Settings.from_env(role='worker')
     store, artifacts = config.store(), config.artifacts()
     ident = socket.gethostname()+':'+uuid4().hex[:12]
     bus = RedisBus(config.redis_url,consumer=ident) if config.redis_url else None
     harness = DeepAgentsHarness(store, artifacts, model_url=os.environ['MODEL_BASE_URL'],
         model_key=os.environ['MODEL_API_KEY'],model_name=os.environ.get('MODEL_NAME','fixture'),
-        tool_url=os.environ.get('TOOL_BASE_URL'))
+        tool_url=os.environ.get('TOOL_BASE_URL'),tool_token=os.environ.get('TOOL_API_TOKEN'))
     worker = Worker(store,harness,worker_id=ident,slots=int(os.environ.get('WORKER_SLOTS','2')),
                     capabilities=os.environ.get('WORKER_CAPABILITIES','').split(',') if os.environ.get('WORKER_CAPABILITIES') else [],bus=bus)
     loop = asyncio.get_running_loop()
