@@ -1,0 +1,90 @@
+name: Runtime delivery import and verification
+on:
+  push:
+    branches: [feat/distributed-harness-20260911]
+    paths: ['_delivery/**', '.github/workflows/runtime-delivery-import.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: runtime-delivery-import
+  cancel-in-progress: false
+jobs:
+  import:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/distributed-harness-20260911
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify lossless transport and apply reviewed source
+        run: |
+          mkdir -p import-evidence/transport
+          cp _delivery/part-*.b64 import-evidence/transport/
+          python - <<'PY'
+          from pathlib import Path
+          import base64, gzip, hashlib, subprocess
+          parts=sorted(Path('_delivery').glob('part-*.b64'))
+          assert len(parts)==8, 'Incomplete transport'
+          encoded=''.join(p.read_text().strip() for p in parts)
+          # Correct two known literal-copy defects; the complete original checksum remains mandatory.
+          encoded=encoded.replace('HtA35qUVHXuFOjyUM','HtA35qUVXuFOjyUM')
+          encoded=encoded.replace('+PZ3hv3w2vOP','+PZ3ef3w2vOP')
+          patch=gzip.decompress(base64.b64decode(encoded,validate=True))
+          expected='8b8d9a14bc6f0ff3a62bd3c3e3e8c678eae523b7f9b41a71741918f15a5119da'
+          actual=hashlib.sha256(patch).hexdigest()
+          assert actual==expected, (actual,expected)
+          Path('import-evidence/source.patch').write_bytes(patch)
+          Path('import-evidence/patch.sha256').write_text(actual+'\n')
+          subprocess.run(['git','apply','--check','import-evidence/source.patch'],check=True)
+          subprocess.run(['git','apply','--index','import-evidence/source.patch'],check=True)
+          changed=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
+          assert not any(p.startswith('.github/') for p in changed), 'Workflow changes require connector review'
+          PY
+      - name: Release Python and Node regression verification
+        run: |
+          set -o pipefail
+          python -m pip install -r requirements-distributed.lock
+          python -m pytest tests -m 'not real_gateway' --junitxml=import-evidence/python.xml -q | tee import-evidence/python.log
+          npm test | tee import-evidence/node.log
+      - name: Commit verified readable source and remove transport
+        run: |
+          git rm _delivery/part-*.b64
+          git config user.name 'Runtime Delivery'
+          git config user.email 'runtime-delivery@users.noreply.github.com'
+          git commit -m 'feat: deliver distributed runtime operations, console, live integration gates and integrity checks'
+          git push origin HEAD:feat/distributed-harness-20260911
+          git rev-parse HEAD > import-evidence/source-commit.txt
+      - name: Build TypeScript and React console
+        working-directory: apps/runtime_console
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+          npm run build
+      - name: Browser acceptance
+        run: |
+          python -m pip install playwright==1.55.0
+          python -m playwright install --with-deps chromium
+          python scripts/validate_console_browser.py
+      - name: Gather import and browser evidence
+        if: always()
+        run: |
+          mkdir -p import-evidence
+          git status --short > import-evidence/status.txt
+          git rev-parse HEAD > import-evidence/head.txt
+          git archive --format=zip --output=import-evidence/source.zip HEAD
+          cp apps/runtime_console/package-lock.json import-evidence/console-package-lock.json 2>/dev/null || true
+          if [ -d apps/runtime_console/dist ]; then tar -czf import-evidence/console-dist.tar.gz -C apps/runtime_console dist; fi
+          if [ -d validation-results ]; then cp -r validation-results import-evidence/; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-delivery-import
+          path: import-evidence/
+          retention-days: 14
