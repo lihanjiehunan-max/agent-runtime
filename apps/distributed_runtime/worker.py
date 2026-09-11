@@ -23,7 +23,8 @@ class Worker:
 
     async def _heartbeat(self, claim, task):
         while True:
-            await asyncio.sleep(self.store.lease_seconds/3)
+            # Cancellation must not wait for a full lease-renewal interval.
+            await asyncio.sleep(min(.25, self.store.lease_seconds/3))
             try:
                 await asyncio.to_thread(self.store.heartbeat, claim)
             except Exception as exc:

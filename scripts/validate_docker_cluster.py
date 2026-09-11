@@ -391,7 +391,7 @@ def cancellation_timeout_and_capabilities():
     eid,_=submit('SLOW:10:cancel');running(eid)
     started=time.monotonic();request('POST','/executions/'+eid+'/cancel');wait(eid,'CANCELLED',timeout=8)
     cancelled=time.monotonic()-started
-    assert cancelled<=4, cancelled
+    assert cancelled<=2, cancelled
     deploy('short',timeout=2)
     timed,_=submit('SLOW:10:deadline',agent='short');wait(timed,'TIMED_OUT',timeout=10)
     deploy('unsupported',capabilities=['not-registered'])
