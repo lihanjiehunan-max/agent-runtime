@@ -1,0 +1,180 @@
+diff --git a/tests/distributed_runtime/gateway.py b/tests/distributed_runtime/gateway.py
+index d5e4225..b014ac6 100644
+--- a/tests/distributed_runtime/gateway.py
++++ b/tests/distributed_runtime/gateway.py
+@@ -57,3 +57,14 @@ async def completion(body:dict):
+     calls=[]
+-    if not receipts and current.startswith('TEAM:'):
++    if not receipts and current.startswith('TEAM_LARGE:'):
++        calls=[{'id':'large-delegate','type':'function','function':{'name':'delegate',
++            'arguments':json.dumps({'children':[{'agent_id':'child','version':'1',
++                'input':{'message':'LARGE_CHILD:payload'}}]})}}]
++    elif receipts and current.startswith('TEAM_LARGE:') and messages[-1].get('tool_call_id')=='large-delegate':
++        try: descriptors=json.loads(receipts[-1])
++        except ValueError: descriptors=[]  # Baseline may offload to its internal filesystem.
++        if descriptors and 'result' not in descriptors[0]:
++            calls=[{'id':'large-page','type':'function','function':{'name':'read_child_result',
++                'arguments':json.dumps({'execution_id':descriptors[0]['execution_id'],
++                    'offset':80000,'limit':1000})}}]
++    elif not receipts and current.startswith('TEAM:'):
+         calls=[{'id':'delegate-'+hashlib.sha256(current.encode()).hexdigest()[:12],'type':'function',
+@@ -73,2 +84,6 @@ async def completion(body:dict):
+     text='complete: '+receipts[-1] if receipts else 'users: '+json.dumps(users,ensure_ascii=False)
++    if current.startswith('LARGE_CHILD:'):
++        text='大结果🌊'*20000+':tail-proof'
++    if receipts and current.startswith('TEAM_LARGE:') and messages[-1].get('tool_call_id')=='large-delegate' and not calls:
++        text='ERROR: unbounded delegated result'
+     stamp=int(time.time())
+@@ -85,5 +100,6 @@ async def completion(body:dict):
+         else:
+-            for start in range(0,len(text),24):
++            step=4096 if current.startswith('LARGE_CHILD:') else 24
++            for start in range(0,len(text),step):
+                 await asyncio.sleep(.015)
+-                yield 'data: '+json.dumps(chunk({'content':text[start:start+24]}))+'\n\n'
++                yield 'data: '+json.dumps(chunk({'content':text[start:start+step]}))+'\n\n'
+             yield 'data: '+json.dumps(chunk({},'stop'))+'\n\n'
+diff --git a/tests/distributed_runtime/test_child_results.py b/tests/distributed_runtime/test_child_results.py
+new file mode 100644
+index 0000000..8578099
+--- /dev/null
++++ b/tests/distributed_runtime/test_child_results.py
+@@ -0,0 +1,101 @@
++"""Bounded delegation results, direct-child access and fencing regression tests."""
++import json
++import pytest
++from apps.distributed_runtime.artifacts import FileArtifacts
++from apps.distributed_runtime.child_results import ChildResultAccess
++from apps.distributed_runtime.store import Store, Conflict, LostLease, canonical
++from .test_recovered_store import package
++
++@pytest.fixture
++def access(tmp_path):
++    store=Store('sqlite:///'+str(tmp_path/'rt.db'),lease_seconds=60)
++    objects=FileArtifacts(tmp_path/'objects')
++    store.deploy(package('parent',allowed_agents=['child']))
++    store.deploy(package('child'))
++    store.register_worker('w',['deepagents'],[],8)
++    parent=store.submit(store.create_session('parent')['id'],'root',{'message':'parent'})
++    claim=store.claim('w',parent['id'])
++    children=store.spawn(claim,'group',[
++        {'agent_id':'child','version':'1','input':{'message':'small'}},
++        {'agent_id':'child','version':'1','input':{'message':'large'}}])
++    text='大结果🌊'*20000+':tail-proof'
++    for child,value in zip(children,[{'message':'small answer'}, {'message':text}]):
++        cc=store.claim('w',child['id'])
++        store.complete(cc,objects.put_json(value))
++    try: yield store,objects,ChildResultAccess(store,objects),claim,children,text
++    finally: store.db.close()
++
++def test_delegation_large_output_never_enters_parent_whole(access):
++    store,objects,reader,claim,kids,text=access
++    rows=reader.summaries(claim,'group')
++    assert rows[0]['result']=={'message':'small answer'}
++    assert 'result' not in rows[1]
++    assert rows[1]['summary_kind']=='prefix_excerpt' and rows[1]['truncated']
++    assert rows[1]['content_chars']==len(text)
++    assert len(canonical(rows))<20000
++    assert 'tail-proof' not in json.dumps(rows,ensure_ascii=False)
++    assert objects.get_json(rows[1]['output_ref'])['message']==text
++
++def test_unicode_page_bounds_and_audited_references(access):
++    store,objects,reader,claim,kids,text=access
++    page=reader.read(claim,kids[1]['id'],offset=79000,limit=1000)
++    assert page['text']==text[79000:80000]
++    assert page['next_offset']==80000 and not page['eof']
++    last=reader.read(claim,kids[1]['id'],offset=80000,limit=2048)
++    assert last['text']==':tail-proof' and last['eof'] and last['next_offset'] is None
++    event=store.events(claim.execution_id)[-1]
++    assert event['type']=='child_result.read'
++    assert event['payload']['output_ref']==last['output_ref']
++    assert 'text' not in event['payload']
++
++@pytest.mark.parametrize('offset,limit',[(-1,10),(0,0),(0,2049),(True,5),(0,False),(999999,10)])
++def test_invalid_read_bounds_are_rejected(access,offset,limit):
++    _,_,reader,claim,kids,_=access
++    with pytest.raises(Conflict):reader.read(claim,kids[1]['id'],offset,limit)
++
++def test_unrelated_and_sibling_results_are_forbidden(access):
++    store,objects,reader,claim,kids,_=access
++    other=store.submit(store.create_session('child')['id'],'other',{'message':'secret'})
++    other_claim=store.claim('w',other['id']);store.complete(other_claim,objects.put_json({'message':'secret'}))
++    with pytest.raises(Conflict):reader.read(claim,other['id'])
++    # Use a genuinely active child: rejection must be by parent membership,
++    # not merely because a completed caller has no lease.
++    active=store.spawn(claim,'another-group',[
++        {'agent_id':'child','version':'1','input':{'message':'active child'}}])[0]
++    active_claim=store.claim('w',active['id'])
++    with pytest.raises(Conflict,match='direct child'):reader.read(active_claim,kids[1]['id'])
++
++def test_stale_claim_cannot_read_or_summarize(access):
++    store,_,reader,claim,kids,_=access
++    store.interrupt(claim)
++    with pytest.raises(LostLease):reader.read(claim,kids[1]['id'])
++    with pytest.raises(LostLease):reader.summaries(claim,'group')
++
++def test_corrupt_child_artifact_is_rejected(access):
++    store,objects,reader,claim,kids,_=access
++    ref=store.execution(kids[1]['id'])['output_ref']
++    objects.path(ref).write_bytes(b'{}')
++    with pytest.raises(Conflict,match='integrity'):reader.read(claim,kids[1]['id'])
++
++def test_reader_tool_only_available_to_delegating_package(access):
++    store,objects,_,claim,kids,_=access
++    from apps.distributed_runtime.harness import DeepAgentsHarness
++    harness=DeepAgentsHarness(store,objects,model_url='http://127.0.0.1:1/v1',model_key='fixture-only')
++    graph=harness.build(claim)
++    assert 'read_child_result' in graph.nodes['tools'].bound.tools_by_name
++    from apps.distributed_runtime.store import Claim
++    child_graph=harness.build(Claim(kids[0]['id'],'w',1))
++    assert 'read_child_result' not in child_graph.nodes['tools'].bound.tools_by_name
++
++
++def test_claim_revoked_during_object_read_never_releases_content(access):
++    store,objects,_,claim,kids,_=access
++    from apps.distributed_runtime.child_results import ChildResultAccess
++    class RevokingObjects:
++        def get_json(self,ref):
++            value=objects.get_json(ref)
++            store.interrupt(claim)
++            return value
++    reader=ChildResultAccess(store,RevokingObjects())
++    with pytest.raises(LostLease):reader.read(claim,kids[1]['id'])
++    assert not any(e['type']=='child_result.read' for e in store.events(claim.execution_id))
+diff --git a/tests/distributed_runtime/test_end_to_end.py b/tests/distributed_runtime/test_end_to_end.py
+index 80907e8..04f3dcf 100644
+--- a/tests/distributed_runtime/test_end_to_end.py
++++ b/tests/distributed_runtime/test_end_to_end.py
+@@ -127 +127,32 @@ async def test_uncertain_external_effect_blocks_resume(gateway,tmp_path):
+         w.stop_event.set();await runner;store.db.close()
++
++
++@pytest.mark.asyncio
++async def test_actual_harness_large_child_result_is_paged(gateway,tmp_path):
++    from apps.distributed_runtime.harness import DeepAgentsHarness
++    from apps.distributed_runtime.worker import Worker
++    from apps.distributed_runtime.store import Claim
++    store=Store('sqlite:///'+str(tmp_path/'large.db'),lease_seconds=6)
++    artifacts=FileArtifacts(tmp_path/'artifacts')
++    store.deploy(package('parent',allowed_agents=['child']));store.deploy(package('child'))
++    harness=DeepAgentsHarness(store,artifacts,model_url=gateway+'/v1',model_key='fixture-only')
++    worker=Worker(store,harness,worker_id='large-result-worker',slots=1)
++    runner=asyncio.create_task(worker.run())
++    try:
++        sid=store.create_session('parent')['id']
++        e=store.submit(sid,'large-result',{'message':'TEAM_LARGE:report'})
++        done=await finish(store,e['id'])
++        assert 'tail-proof' in artifacts.get_json(done['output_ref'])['message']
++        events=store.events(e['id'])
++        assert any(x['type']=='child_result.summarized' for x in events)
++        assert any(x['type']=='child_result.read' and x['payload']['offset']==80000 for x in events)
++        graph=harness.build(Claim(e['id'],'large-result-worker',done['epoch']))
++        # Let LangGraph reconstruct delta-channel snapshots via its public API.
++        state=await graph.aget_state({'configurable':{'thread_id':sid}})
++        tool_messages=[m for m in state.values['messages'] if getattr(m,'type',None)=='tool']
++        delegated=next(m for m in tool_messages if m.name=='delegate')
++        assert len(delegated.content.encode())<20000
++        assert 'tail-proof' not in delegated.content
++        assert any(m.name=='read_child_result' and 'tail-proof' in m.content for m in tool_messages)
++    finally:
++        worker.stop_event.set();await runner;store.db.close()
