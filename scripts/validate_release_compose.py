@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import secrets
-import socket
 import subprocess
 import sys
 import tempfile
@@ -17,6 +16,7 @@ from uuid import uuid4
 
 import httpx
 from multiport_checks import verify_multiport
+from port_preflight import check_loopback_ports
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = '/api/v1/runtime'
@@ -60,9 +60,7 @@ def main():
         def compose(*parts,timeout=90):
             return subprocess.run(command+list(parts),cwd=ROOT,env=env,capture_output=True,text=True,check=True,timeout=timeout).stdout.strip()
         try:
-            for port in ports:
-                with socket.socket() as probe:
-                    probe.bind(('127.0.0.1',port))  # Never stop another process occupying a port.
+            check_loopback_ports(ports)  # Never stop another process occupying a port.
             subprocess.run([sys.executable,'scripts/generate_runtime_env.py','--output',str(env_file)],cwd=ROOT,env=env,check=True,capture_output=True)
             assert not compose('ps','-aq'), 'Refusing an existing project'
             compose('config','--quiet')
