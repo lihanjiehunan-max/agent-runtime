@@ -95,6 +95,11 @@ class Database:
                     c.exec_driver_sql('BEGIN IMMEDIATE')
                 else:
                     c.begin()
+                    if not self.sqlite:
+                        # A disconnected client may leave a server transaction
+                        # holding the coordinator lock. Bound idle ownership on
+                        # the server; statement_timeout alone cannot release it.
+                        c.exec_driver_sql("SET LOCAL idle_in_transaction_session_timeout = '5s'")
                     if write:
                         c.execute(sa.text('SELECT pg_advisory_xact_lock(927016431)'))
                 yield c
