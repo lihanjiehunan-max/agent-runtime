@@ -60,8 +60,19 @@ jobs:
           docker build -f deploy/Dockerfile.runtime --target runtime -t agent-runtime:delivery .
           docker run --rm --entrypoint python agent-runtime:delivery -c "from pathlib import Path; assert not Path('/app/tests').exists(); from apps.distributed_runtime.api import create_app"
           docker build -f deploy/Dockerfile.runtime --target console -t agent-runtime-console:delivery .
-      - name: Release topology HTTP and proxy smoke
-        run: python scripts/validate_release_compose.py
+      - name: Archive and stop baseline before release multiport test
+        run: |
+          docker compose -p dh-validation -f deploy/compose.validation.yml ps -a > validation-results/containers.txt
+          docker compose -p dh-validation -f deploy/compose.validation.yml logs --no-color > validation-results/container-logs.txt
+          docker compose -p dh-validation -f deploy/compose.validation.yml down -v --remove-orphans
+      - name: Prepare browser verification
+        run: |
+          python -m pip install playwright==1.55.0
+          python -m playwright install --with-deps chromium
+      - name: Release topology multiport and attached browser acceptance
+        run: |
+          set -o pipefail
+          python scripts/validate_release_compose.py | tee validation-results/release-acceptance.log
       - name: Browser acceptance
         run: |
           python -m pip install playwright==1.55.0
@@ -73,8 +84,8 @@ jobs:
         if: always()
         run: |
           mkdir -p validation-results
-          docker compose -p dh-validation -f deploy/compose.validation.yml ps -a > validation-results/containers.txt 2>&1 || true
-          docker compose -p dh-validation -f deploy/compose.validation.yml logs --no-color > validation-results/container-logs.txt 2>&1 || true
+          test -s validation-results/containers.txt || docker compose -p dh-validation -f deploy/compose.validation.yml ps -a > validation-results/containers.txt 2>&1 || true
+          test -s validation-results/container-logs.txt || docker compose -p dh-validation -f deploy/compose.validation.yml logs --no-color > validation-results/container-logs.txt 2>&1 || true
           docker stats --no-stream > validation-results/resources.txt 2>&1 || true
           docker images --digests --no-trunc > validation-results/images.txt 2>&1 || true
           cp apps/runtime_console/package-lock.json validation-results/console-package-lock.json

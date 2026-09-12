@@ -11,7 +11,7 @@ import httpx
 from playwright.sync_api import sync_playwright
 
 ROOT=Path(__file__).resolve().parents[1]
-OUT=ROOT/'validation-results';OUT.mkdir(exist_ok=True)
+OUT=Path(os.environ.get('RUNTIME_BROWSER_OUTPUT',str(ROOT/'validation-results')));OUT.mkdir(parents=True,exist_ok=True)
 
 def port():
     with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
@@ -20,6 +20,15 @@ def main():
     report={'status':'FAIL','scope':'real Chromium / React console / actual API and DeepAgents Worker; deterministic model',
             'live_model_verified':False,'checks':[]}
     processes=[];logs=[]
+    attached=os.environ.get('PREACCEPTANCE_URL','')
+    if attached:
+        from urllib.parse import urlsplit
+        parsed=urlsplit(attached)
+        if parsed.scheme!='http' or parsed.hostname!='127.0.0.1' or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            raise ValueError('Browser attach requires a loopback-only synthetic URL')
+        if len(os.environ.get('PREACCEPTANCE_OPS_TOKEN',''))<16:
+            raise ValueError('Missing private operations credential')
+    report['attached_cluster']=bool(attached)
     with tempfile.TemporaryDirectory(prefix='runtime-browser-') as folder:
         gateway_port,api_port=port(),port();temp=Path(folder)
         env=dict(os.environ,RUNTIME_DATABASE_URL='sqlite:///'+str(temp/'runtime.db'),
@@ -28,6 +37,9 @@ def main():
             RUNTIME_REDIS_URL='',RUNTIME_S3_BUCKET='',RUNTIME_LEASE_SECONDS='6',
             MODEL_BASE_URL=f'http://127.0.0.1:{gateway_port}/v1',MODEL_API_KEY='browser-model-fixture-key',MODEL_NAME='fixture',
             TOOL_BASE_URL=f'http://127.0.0.1:{gateway_port}',WORKER_SLOTS='1',FIXTURE_DB=str(temp/'effects.db'))
+        api_url=attached or f'http://127.0.0.1:{api_port}'
+        if attached:
+            env['RUNTIME_OPS_TOKEN']=os.environ['PREACCEPTANCE_OPS_TOKEN']
         def start(name,command):
             log=(temp/(name+'.log')).open('w');logs.append(log)
             p=subprocess.Popen([sys.executable]+command,cwd=ROOT,env=env,stdout=log,stderr=log);processes.append(p)
@@ -39,17 +51,22 @@ def main():
                 time.sleep(.1)
             raise AssertionError('Local browser fixture did not become ready')
         try:
-            start('gateway',['-m','uvicorn','tests.distributed_runtime.gateway:app','--port',str(gateway_port)])
-            ready(f'http://127.0.0.1:{gateway_port}')
-            start('api',['-m','uvicorn','apps.distributed_runtime.api:create_app','--factory','--port',str(api_port)])
-            ready(f'http://127.0.0.1:{api_port}')
-            start('worker',['-m','apps.distributed_runtime.worker'])
+            if not attached:
+                start('gateway',['-m','uvicorn','tests.distributed_runtime.gateway:app','--port',str(gateway_port)])
+                ready(f'http://127.0.0.1:{gateway_port}')
+                start('api',['-m','uvicorn','apps.distributed_runtime.api:create_app','--factory','--port',str(api_port)])
+                ready(api_url)
+                start('worker',['-m','apps.distributed_runtime.worker'])
+            else:
+                ready(api_url)
+                about=httpx.get(api_url+'/api/v1/runtime/ops/about',headers={'Authorization':'Bearer '+env['RUNTIME_OPS_TOKEN']},timeout=10)
+                assert about.status_code==200 and about.json()['profile']=='synthetic','Refusing non-synthetic browser target'
             with sync_playwright() as p:
                 browser=p.chromium.launch(headless=True,args=['--no-sandbox'],
                     executable_path=os.environ.get('CHROMIUM_EXECUTABLE') or None)
                 page=browser.new_page(viewport={'width':1500,'height':1000},device_scale_factor=1)
                 errors=[];page.on('pageerror',lambda exc:errors.append(str(exc)))
-                page.goto(f'http://127.0.0.1:{api_port}')
+                page.goto(api_url)
                 page.get_by_label('运维访问令牌').fill(env['RUNTIME_OPS_TOKEN'])
                 page.get_by_role('button',name='连接运行时',exact=True).click()
                 page.get_by_role('heading',name='运行总览',exact=True).wait_for()
@@ -96,7 +113,7 @@ def main():
                 first=lost_posts[0]
                 with httpx.Client(headers={'Authorization':'Bearer '+env['RUNTIME_OPS_TOKEN']},timeout=5) as client:
                     for _ in range(150):
-                        state=client.get(f'http://127.0.0.1:{api_port}/api/v1/runtime/executions/'+first['execution_id']).json()
+                        state=client.get(api_url+'/api/v1/runtime/executions/'+first['execution_id']).json()
                         if state['status']=='COMPLETED':break
                         time.sleep(.1)
                     assert state['status']=='COMPLETED',state
@@ -123,7 +140,7 @@ def main():
                 page.screenshot(path=str(OUT/'console-chat.png'),full_page=True)
                 report['checks'].append('trace-package-thread-attempt-checkpoint')
                 page.get_by_role('button',name='Worker 管理',exact=True).click()
-                page.get_by_role('button',name='排空',exact=True).first.click()
+                page.get_by_role('button',name='排空',exact=True).and_(page.locator('button:enabled')).first.click()
                 expect(page.get_by_role('button',name='恢复接收',exact=True).first).to_be_visible(timeout=10000)
                 page.screenshot(path=str(OUT/'console-workers.png'),full_page=True)
                 page.get_by_role('button',name='恢复接收',exact=True).first.click()

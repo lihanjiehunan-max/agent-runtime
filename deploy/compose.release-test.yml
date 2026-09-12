@@ -15,3 +15,9 @@ services:
     image: agent-runtime-validation:local
     command: ["python", "-m", "uvicorn", "tests.distributed_runtime.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
     environment: {FIXTURE_DB: /tmp/effects.db}
+    ports: ["127.0.0.1:${PREACCEPTANCE_GATEWAY_PORT:-28090}:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

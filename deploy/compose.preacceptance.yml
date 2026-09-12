@@ -1,0 +1,6 @@
+# Optional loopback-only direct API access; release base remains unexposed.
+services:
+  api-a:
+    ports: ["127.0.0.1:${PREACCEPTANCE_A_PORT:-28080}:8000"]
+  api-b:
+    ports: ["127.0.0.1:${PREACCEPTANCE_B_PORT:-28081}:8000"]

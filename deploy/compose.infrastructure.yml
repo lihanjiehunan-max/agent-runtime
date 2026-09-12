@@ -1,5 +1,14 @@
 # Optional single-host integration infrastructure, not a database HA topology.
+x-local-dependencies: &local-dependencies
+  postgres: {condition: service_healthy}
+  redis: {condition: service_healthy}
+  minio: {condition: service_healthy}
 services:
+  api-a: {depends_on: *local-dependencies}
+  api-b: {depends_on: *local-dependencies}
+  worker-a: {depends_on: *local-dependencies}
+  worker-b: {depends_on: *local-dependencies}
+  worker-c: {depends_on: *local-dependencies}
   postgres:
     image: postgres:16-alpine
     environment:
